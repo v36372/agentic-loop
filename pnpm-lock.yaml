@@ -47,6 +47,9 @@ importers:
 
   apps/control:
     dependencies:
+      '@agentic-loop/operator':
+        specifier: workspace:*
+        version: link:../../packages/operator
       '@agentic-loop/tracker':
         specifier: workspace:*
         version: link:../../packages/tracker

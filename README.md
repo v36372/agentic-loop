@@ -14,12 +14,12 @@ See [`VISION.md`](./VISION.md) and [`docs/specs/0001-agentic-loop-system.md`](./
 | `@agentic-loop/control` | Ingress + Inngest serve | Become chat UX |
 | `@agentic-loop/brainstorm` | Telegram/Flue chat surface | Second orchestrator / force-run |
 
-Allowed workspace deps (bootstrap):
+Allowed workspace deps:
 
 - `workflows` → `tracker`
-- `control` → `workflows` + `tracker`
+- `control` → `workflows` + `tracker` + `operator`
 - `brainstorm` → `tracker` only
-- `operator` has no dependency on `workflows`
+- `operator` has no dependency on `workflows` (only Herdr/`pi` phase driver)
 
 ## Tooling
 
