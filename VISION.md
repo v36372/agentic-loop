@@ -1,7 +1,6 @@
 # Agentic Loop Vision
 
-Agentic Loop is the system that turns conversation into delivered software work.
-You talk. Tickets appear. Agents execute. The board stays honest.
+Agentic Loop is the system that turns conversation into delivered software work. You talk. Tickets appear. Agents execute. The board stays honest.
 
 This document explains the current state and direction of the project. We are still early, so iteration is fast. System design lives in [`docs/specs/0001-agentic-loop-system.md`](./docs/specs/0001-agentic-loop-system.md) and [issue #1](https://github.com/v36372/agentic-loop/issues/1).
 
@@ -62,42 +61,32 @@ Next priorities:
 
 Every layer owns one kind of truth:
 
-| Concern | Authority |
-| --- | --- |
-| Intent and human-visible status | Issue tracker board |
-| Whether work is running / failed / finished | Inngest run |
-| Multi-agent pane orchestration | Herdr |
-| Conversation with the operator | Brainstormer |
+| Concern                                     | Authority           |
+| ------------------------------------------- | ------------------- |
+| Intent and human-visible status             | Issue tracker board |
+| Whether work is running / failed / finished | Inngest run         |
+| Multi-agent pane orchestration              | Herdr               |
+| Conversation with the operator              | Brainstormer        |
 
 If those authorities blur, the system starts lying.
 
 ### 2. Chat is the steering wheel, not the factory
 
-Telegram brainstormer is the primary human interface.
-It may capture tickets and discuss blocked work.
-It does **not** silently promote work into the execution lane.
-Triage and dispatch remain explicit workflows.
+Telegram brainstormer is the primary human interface. It may capture tickets and discuss blocked work. It does **not** silently promote work into the execution lane. Triage and dispatch remain explicit workflows.
 
 ### 3. Serial work, concurrent triage
 
-Triage can stay light and parallel.
-Real implementation work is global-serial for now.
-One active work run protects Herdr, the repo tree, and operator attention.
+Triage can stay light and parallel. Real implementation work is global-serial for now. One active work run protects Herdr, the repo tree, and operator attention.
 
 ### 4. Durable phases, not one giant RPC
 
-Long agent work is started, then resumed through events.
-Inngest sequences phases.
-Herdr/`pi` perform the phase.
-Completion comes back as `herdr/phase.completed`.
+Long agent work is started, then resumed through events. Inngest sequences phases. Herdr/`pi` perform the phase. Completion comes back as `herdr/phase.completed`.
 
 This is how we keep long-running agent work recoverable.
 
 ### 5. Agents do judgment; deterministic code does privilege
 
-Agents may explore, implement, review, and verify.
-Deterministic TypeScript owns privileged actions like merge-as-me.
-If a step can be a boring function, it should not be an LLM.
+Agents may explore, implement, review, and verify. Deterministic TypeScript owns privileged actions like merge-as-me. If a step can be a boring function, it should not be an LLM.
 
 ### 6. Fail closed
 
@@ -108,8 +97,7 @@ If a step can be a boring function, it should not be an LLM.
 
 ### 7. Dogfood the loop
 
-`agentic-loop` is both the control plane and the pilot work surface.
-The system should build itself through Project board tickets whenever that is safer than manual heroics.
+`agentic-loop` is both the control plane and the pilot work surface. The system should build itself through Project board tickets whenever that is safer than manual heroics.
 
 ## Architecture shape
 

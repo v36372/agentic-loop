@@ -87,6 +87,7 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 ## Implementation Decisions
 
 ### Authority model
+
 - **Execution truth:** Inngest run state.
 - **Intent / human-visible board truth:** GitHub Issue content + Project fields via `IssueTrackerPort`.
 - **Chat UX:** Flue brainstormer + Telegram.
@@ -95,6 +96,7 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - Brainstormer, triage, operator, and board writes are distinct actors; every mutating event carries `actor` and correlation ids (`run_id`, `ticket_id`, `project_id`).
 
 ### Board model (GitHub hybrid)
+
 - Canonical ticket identity = GitHub Issue.
 - Project fields carry status and priority/order.
 - Labels carry `needs-triage` and `kind:*`.
@@ -105,6 +107,7 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - v1 auto-run kinds: **`impl` and `research` only**. `decision` never auto-runs. `ops`/`chore` may be tagged but are not claimed yet.
 
 ### Repo placement and allowlist
+
 - Issues are created in the **target repo** (not a meta-only board repo).
 - Allowlist config is fail-closed; brainstormer can add repos on demand.
 - Seed/fallback repo: `v36372/agentic-loop`.
@@ -112,6 +115,7 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - Per-repo config eventually includes CD flag and any merge/verify policy needed for gates.
 
 ### Lanes and scheduling
+
 - **Triage lane:** light, no Herdr, limited concurrency, triggered by `needs-triage`.
 - **Work lane:** global serial concurrency = 1 across all projects.
 - **`dispatch-next`:** on readiness and on terminal runs, claims highest-priority eligible ready ticket with supported kind and no open blockers.
@@ -120,6 +124,7 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - Brainstormer does not promote to `ready for dev`; triage does.
 
 ### Brainstormer permissions
+
 - May create tickets after user asks to capture/spec them.
 - May set project/repo when unambiguous.
 - Adds `needs-triage` on create.
@@ -127,6 +132,7 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - Notify digests do not auto-requeue work except by explicit re-triage path after human discussion when needed.
 
 ### Inngest workflow set (v1)
+
 - `triage-ticket`
 - `dispatch-next`
 - `work-impl`
@@ -135,11 +141,13 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - Local `inngest dev` first; later deploy control/workers to exe.dev VMs.
 
 ### Work phase machine
+
 - Long phases use: short `step.run(start-phase)` + `waitForEvent("herdr/phase.completed")` matched on `run_id` + `phase`.
 - No `waitForSignal` in v1.
 - Flue operator emits `herdr/phase.completed` with strict payload and idempotency key.
 
 **`impl` path**
+
 1. claim / `in progress`
 2. explore
 3. implement
@@ -157,10 +165,12 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 10. finalize board + transcript summary + free lane + terminal event
 
 **`research` path**
+
 - claim → explore → write findings → `done`
 - same Herdr/operator execution style, fewer phases, no adversarial review.
 
 ### Herdr / isolation / cleanup
+
 - Use Herdr-native worktrees and workspaces keyed by `run_id`.
 - All phase agents for a run attach to that workspace/checkout.
 - On terminal state: delete local worktree/workspace, **keep transcript**.
@@ -168,12 +178,14 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - Operator must be idempotent on retry (reattach by `run_id`).
 
 ### Auth / ingress / bootstrap
+
 - GitHub PAT as user identity for board/PR/merge.
 - GitHub → webhook relay → control ingress → normalized events.
 - Bootstrap CLI/event inject allowed until relay/Telegram are live, then removed/disabled.
 - First bootstrap seeds monorepo, CI, labels/fields, allowlist, and enough control plane to dogfood.
 
 ### Monorepo shape
+
 - Packages: `tracker`, `workflows`, `operator`
 - Apps: `control`, `brainstorm`
 - Root quality: oxlint, oxfmt, ultracite, lefthook
@@ -181,6 +193,7 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 - `has_cd: false` for pilot until exe.dev deploy events exist
 
 ### Internal event catalog
+
 - `board/ticket.created`
 - `board/ticket.needs_triage`
 - `board/ticket.ready_for_dev`
@@ -195,16 +208,17 @@ I talk on Telegram. Tickets appear on the Project board. A light triage workflow
 Common fields: `run_id?`, `ticket_id`, `project_id`, `repo`, `kind?`, `phase?`, `status`, `summary?`, `refs?`, `actor`.
 
 ### Test seams (accepted)
+
 1. **Primary:** `IssueTrackerPort` with in-memory/fake adapter for lifecycle and anti-loop behavior.
 2. **Normalized event contract** fixture/schema tests.
 3. **Work run phase policy machine** in workflows (next step/status/events), not Herdr internals.
 4. **Operator completion emit** unit seam with fake sender.
-5. **Quality gate seam** via CI/lefthook tooling.
-Non-seams: Octokit details, Herdr pane choreography, Telegram copy, R2 internals.
+5. **Quality gate seam** via CI/lefthook tooling. Non-seams: Octokit details, Herdr pane choreography, Telegram copy, R2 internals.
 
 ## Testing Decisions
 
 ### What good tests are
+
 - Test **external behavior** at the highest accepted seams.
 - Assert board-visible outcomes, emitted normalized events, and phase-policy decisions.
 - Do not assert prompt text, pane ids, or private function structure.
@@ -212,6 +226,7 @@ Non-seams: Octokit details, Herdr pane choreography, Telegram copy, R2 internals
 - Live integration tests are sparse and optional behind credentials.
 
 ### Modules to test
+
 - `tracker` port semantics and GitHub adapter mapping (adapter tests limited).
 - `workflows` triage eligibility, dispatch serial claim, impl/research phase policy, anti-loop filters.
 - event normalization from GitHub webhook fixtures.
@@ -219,11 +234,13 @@ Non-seams: Octokit details, Herdr pane choreography, Telegram copy, R2 internals
 - CI/quality config smoke (lint/format/test run in CI).
 
 ### Prior art
+
 - Greenfield repository: no existing test suite or domain glossary.
 - Establish first test patterns around port + policy seams so later packages copy them.
 - When similar systems exist in other local projects, reuse only the port/adapter testing style, not their domain models.
 
 ### Minimum confidence for “E2E up”
+
 - Simulated board events can drive triage → ready → claim → phase completion fixtures → terminal board state.
 - One real pilot path on `agentic-loop` can open PR, pass CI, merge, verify, and mark `done` or `blocked` correctly.
 
