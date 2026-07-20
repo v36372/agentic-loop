@@ -37,3 +37,8 @@ pnpm check
 pnpm typecheck
 pnpm test
 ```
+
+## Agent resources
+
+- Effect skill (pi-discoverable): [`.pi/skills/effect-ts`](./.pi/skills/effect-ts)
+- Vendored Effect v4 source for agent research: [`.agent_sources/effect`](./.agent_sources/effect) (effect-smol)

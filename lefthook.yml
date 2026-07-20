@@ -3,8 +3,10 @@ pre-commit:
   jobs:
     - name: oxfmt
       glob: "*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc,md,yml,yaml}"
+      exclude: "{.agent_sources,.pi}/**"
       run: pnpm exec oxfmt {staged_files}
       stage_fixed: true
     - name: oxlint
       glob: "*.{js,jsx,ts,tsx,mjs,cjs}"
-      run: pnpm exec oxlint {staged_files}
+      exclude: "{.agent_sources,.pi}/**"
+      run: pnpm exec oxlint {staged_files} --ignore-pattern '.agent_sources/**' --ignore-pattern '.pi/**'

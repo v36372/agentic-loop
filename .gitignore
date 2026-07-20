@@ -11,3 +11,13 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Effect vendor: keep source, ignore accidental build outputs
+.agent_sources/effect/**/dist/
+.agent_sources/effect/**/node_modules/
+.agent_sources/effect/**/coverage/
+
+# Track project-local pi skills even if global gitignore hides `.pi`
+!.pi/
+!.pi/skills/
+!.pi/skills/**
