@@ -4,5 +4,5 @@ import vitest from "ultracite/oxlint/vitest";
 
 export default defineConfig({
   extends: [core, vitest],
-  ignorePatterns: core.ignorePatterns,
+  ignorePatterns: [...core.ignorePatterns, ".agent_sources/**", ".pi/**"],
 });
