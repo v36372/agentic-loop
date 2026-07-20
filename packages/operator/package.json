@@ -1,0 +1,16 @@
+{
+  "name": "@agentic-loop/operator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "effect": "4.0.0-beta.99"
+  }
+}

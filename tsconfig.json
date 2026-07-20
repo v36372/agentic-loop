@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/tracker" },
+    { "path": "./packages/workflows" },
+    { "path": "./packages/operator" },
+    { "path": "./apps/control" },
+    { "path": "./apps/brainstorm" }
+  ]
+}
