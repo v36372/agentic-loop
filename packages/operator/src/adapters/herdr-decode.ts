@@ -11,6 +11,10 @@ const HerdrAgentStatus = Schema.Literals([
   "working",
 ]);
 
+/**
+ * Minimal workspace list entry used for run-label join.
+ * Extra Herdr fields are ignored by struct decoding.
+ */
 const WorkspaceListEntry = Schema.Struct({
   label: Schema.optionalKey(Schema.String),
   workspace_id: Schema.String,
@@ -19,19 +23,25 @@ const WorkspaceListEntry = Schema.Struct({
 const WorkspaceListResult = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   result: Schema.Struct({
+    type: Schema.optionalKey(Schema.Literals(["workspace_list"])),
     workspaces: Schema.Array(WorkspaceListEntry),
   }),
 });
 
+/**
+ * Worktree list entry from Herdr 0.7.4.
+ * `open_workspace_id` is omitted for closed worktrees — model as optional key.
+ */
 const WorktreeEntry = Schema.Struct({
   label: Schema.optionalKey(Schema.String),
-  open_workspace_id: Schema.NullishOr(Schema.String),
+  open_workspace_id: Schema.optionalKey(Schema.String),
   path: Schema.String,
 });
 
 const WorktreeListResult = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   result: Schema.Struct({
+    type: Schema.optionalKey(Schema.Literals(["worktree_list"])),
     worktrees: Schema.Array(WorktreeEntry),
   }),
 });
@@ -39,6 +49,7 @@ const WorktreeListResult = Schema.Struct({
 const WorkspaceGetResult = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   result: Schema.Struct({
+    type: Schema.optionalKey(Schema.Literals(["workspace_info"])),
     workspace: Schema.Struct({
       label: Schema.optionalKey(Schema.String),
       workspace_id: Schema.String,
@@ -46,33 +57,53 @@ const WorkspaceGetResult = Schema.Struct({
   }),
 });
 
-const WorktreeCreateResult = Schema.Struct({
+/**
+ * Real `worktree_created` envelope (Herdr 0.7.4 ResponseResult::WorktreeCreated).
+ * Requires nested workspace/worktree records rather than invented top-level ids.
+ */
+const WorktreeCreatedResult = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   result: Schema.Struct({
-    path: Schema.optionalKey(Schema.String),
-    workspace_id: Schema.optionalKey(Schema.String),
-    worktree: Schema.optionalKey(
-      Schema.Struct({
-        open_workspace_id: Schema.NullishOr(Schema.String),
-        path: Schema.optionalKey(Schema.String),
-      })
-    ),
+    type: Schema.Literals(["worktree_created"]),
+    workspace: Schema.Struct({
+      label: Schema.optionalKey(Schema.String),
+      workspace_id: Schema.String,
+    }),
+    worktree: Schema.Struct({
+      open_workspace_id: Schema.optionalKey(Schema.String),
+      path: Schema.String,
+    }),
   }),
 });
 
+/**
+ * Herdr AgentInfo required fields used by start/get.
+ * `name` is the assigned agent name; `agent` is the detected kind (e.g. "pi").
+ */
 const AgentInfo = Schema.Struct({
-  agent: Schema.NullishOr(Schema.String),
+  agent: Schema.optionalKey(Schema.String),
   agent_status: HerdrAgentStatus,
-  cwd: Schema.NullishOr(Schema.String),
+  cwd: Schema.optionalKey(Schema.String),
+  name: Schema.optionalKey(Schema.String),
   pane_id: Schema.optionalKey(Schema.String),
-  terminal_id: Schema.optionalKey(Schema.String),
-  workspace_id: Schema.optionalKey(Schema.String),
+  terminal_id: Schema.String,
+  workspace_id: Schema.String,
 });
 
 const AgentGetResult = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   result: Schema.Struct({
     agent: AgentInfo,
+    type: Schema.optionalKey(Schema.Literals(["agent_info"])),
+  }),
+});
+
+const AgentStartedResult = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  result: Schema.Struct({
+    agent: AgentInfo,
+    argv: Schema.optionalKey(Schema.Array(Schema.String)),
+    type: Schema.Literals(["agent_started"]),
   }),
 });
 
@@ -80,6 +111,7 @@ const AgentListResult = Schema.Struct({
   id: Schema.optionalKey(Schema.String),
   result: Schema.Struct({
     agents: Schema.Array(AgentInfo),
+    type: Schema.optionalKey(Schema.Literals(["agent_list"])),
   }),
 });
 
@@ -113,6 +145,20 @@ const decodeOrThrow = <S extends Schema.ConstraintDecoder<unknown>>(
     });
   }
 };
+
+/** Parsed agent identity used for reattach/start/wait handles. */
+export interface ParsedAgentInfo {
+  readonly agentName?: string;
+  readonly status: AgentTerminalStatus;
+  readonly terminalId: string;
+  readonly workspaceId: string;
+}
+
+/** Parsed worktree create binding. */
+export interface ParsedWorktreeCreate {
+  readonly path: string;
+  readonly workspaceId: string;
+}
 
 /** Parse `herdr workspace list` into workspace id/label pairs. */
 export const parseWorkspaceList = (
@@ -148,7 +194,7 @@ export const parseWorktreeList = (
     if (wt.label !== undefined) {
       entry.label = wt.label;
     }
-    if (wt.open_workspace_id) {
+    if (wt.open_workspace_id !== undefined) {
       entry.openWorkspaceId = wt.open_workspace_id;
     }
     return entry;
@@ -169,74 +215,73 @@ export const parseWorkspaceGet = (
   return entry;
 };
 
-/** Parse `herdr worktree create --json` into optional path/workspace id. */
-export const parseWorktreeCreate = (
-  value: unknown
-): { path?: string; workspaceId?: string } => {
-  const decoded = decodeOrThrow(WorktreeCreateResult, value, "worktree create");
-  const workspaceId =
-    decoded.result.workspace_id ??
-    decoded.result.worktree?.open_workspace_id ??
-    undefined;
-  const path = decoded.result.path ?? decoded.result.worktree?.path;
-  const out: { path?: string; workspaceId?: string } = {};
-  if (path) {
-    out.path = path;
+/**
+ * Parse `herdr worktree create --json` as a real `worktree_created` envelope.
+ *
+ * @throws {Error} when the envelope is not `worktree_created` or lacks binding
+ */
+export const parseWorktreeCreate = (value: unknown): ParsedWorktreeCreate => {
+  const decoded = decodeOrThrow(
+    WorktreeCreatedResult,
+    value,
+    "worktree create"
+  );
+  const {
+    result: {
+      workspace: { workspace_id: workspaceId },
+      worktree: { open_workspace_id: openId, path },
+    },
+  } = decoded;
+  if (!workspaceId || !path) {
+    throw new Error(
+      "herdr worktree create decode failed: missing path/workspace_id"
+    );
   }
-  if (workspaceId) {
-    out.workspaceId = workspaceId;
+  if (openId !== undefined && openId !== workspaceId) {
+    throw new Error(
+      `herdr worktree create decode failed: worktree.open_workspace_id ${openId} !== workspace.workspace_id ${workspaceId}`
+    );
   }
-  return out;
+  return { path, workspaceId };
 };
 
-/** Parse `herdr agent get` into agent name, status, and workspace. */
-export const parseAgentGet = (
-  value: unknown
-): {
-  agentName?: string;
-  status: AgentTerminalStatus;
-  workspaceId?: string;
-} => {
-  const decoded = decodeOrThrow(AgentGetResult, value, "agent get");
-  const out: {
-    agentName?: string;
-    status: AgentTerminalStatus;
-    workspaceId?: string;
-  } = {
-    status: decoded.result.agent.agent_status,
+const toParsedAgent = (agent: {
+  agent_status: AgentTerminalStatus;
+  name?: string;
+  terminal_id: string;
+  workspace_id: string;
+}): ParsedAgentInfo => {
+  const out: ParsedAgentInfo = {
+    status: agent.agent_status,
+    terminalId: agent.terminal_id,
+    workspaceId: agent.workspace_id,
   };
-  if (decoded.result.agent.agent) {
-    out.agentName = decoded.result.agent.agent;
-  }
-  if (decoded.result.agent.workspace_id) {
-    out.workspaceId = decoded.result.agent.workspace_id;
+  if (agent.name !== undefined) {
+    return { ...out, agentName: agent.name };
   }
   return out;
 };
 
-/** Parse `herdr agent list` into agent summaries. */
-export const parseAgentList = (
-  value: unknown
-): {
-  agentName?: string;
-  status: AgentTerminalStatus;
-  workspaceId?: string;
-}[] => {
+/** Parse `herdr agent get` (`agent_info`) into required terminal/workspace ids. */
+export const parseAgentGet = (value: unknown): ParsedAgentInfo => {
+  const decoded = decodeOrThrow(AgentGetResult, value, "agent get");
+  return toParsedAgent(decoded.result.agent);
+};
+
+/**
+ * Parse `herdr agent start` success as `agent_started`.
+ *
+ * @throws {Error} when type/agent/terminal fields are missing or malformed
+ */
+export const parseAgentStarted = (value: unknown): ParsedAgentInfo => {
+  const decoded = decodeOrThrow(AgentStartedResult, value, "agent start");
+  return toParsedAgent(decoded.result.agent);
+};
+
+/** Parse `herdr agent list` into agent summaries with terminal ids. */
+export const parseAgentList = (value: unknown): ParsedAgentInfo[] => {
   const decoded = decodeOrThrow(AgentListResult, value, "agent list");
-  return decoded.result.agents.map((agent) => {
-    const out: {
-      agentName?: string;
-      status: AgentTerminalStatus;
-      workspaceId?: string;
-    } = { status: agent.agent_status };
-    if (agent.agent) {
-      out.agentName = agent.agent;
-    }
-    if (agent.workspace_id) {
-      out.workspaceId = agent.workspace_id;
-    }
-    return out;
-  });
+  return decoded.result.agents.map((agent) => toParsedAgent(agent));
 };
 
 /**
@@ -320,7 +365,7 @@ export const resolveWorkspaceFromHerdrState = (
 
 /**
  * Extract a Herdr CLI error envelope code when present.
- * Used to treat exit-0 error payloads (e.g. `agent_not_found`) as values.
+ * Used to treat exit-0/1 error payloads (e.g. `agent_not_found`) as values.
  */
 export const herdrErrorCode = (value: unknown): string | undefined => {
   if (!value || typeof value !== "object") {
@@ -335,3 +380,15 @@ export const isAgentStartConflictMessage = (message: string): boolean =>
   /already exists|already running|name.*taken|duplicate|conflict|agent_exists/iu.test(
     message
   );
+
+/** True when an error is a CLI wall-clock timeout owned by this adapter. */
+export const isHerdrCliTimeoutError = (error: unknown): boolean =>
+  error instanceof Error && error.name === "HerdrCliTimeoutError";
+
+/**
+ * Error raised when a Herdr CLI invocation exceeds its remaining deadline.
+ * Distinct from agent terminal status `timed_out`.
+ */
+export class HerdrCliTimeoutError extends Error {
+  override readonly name = "HerdrCliTimeoutError";
+}

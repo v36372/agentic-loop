@@ -20,53 +20,158 @@ import {
   runIdentitiesEqual,
 } from "../identity.js";
 import type { RunIdentity } from "../identity.js";
+import type { ParsedAgentInfo } from "./herdr-decode.js";
 import {
   herdrErrorCode,
+  HerdrCliTimeoutError,
   isAgentStartConflictMessage,
+  isHerdrCliTimeoutError,
   isTerminalAgentStatus,
   parseAgentGet,
   parseAgentReadText,
+  parseAgentStarted,
   parseWorktreeCreate,
   parseWorkspaceList,
   parseWorktreeList,
   resolveWorkspaceFromHerdrState,
 } from "./herdr-decode.js";
 
+export interface HerdrCliRunOptions {
+  /** Remaining wall-clock budget for this CLI invocation, in milliseconds. */
+  readonly timeoutMs?: number;
+}
+
 export interface HerdrCliOptions {
   readonly herdrBin?: string;
   readonly pollIntervalMs?: number;
-  /** Injected CLI runner for fixture tests; production uses `herdr` exec. */
-  readonly run?: (args: readonly string[]) => Effect.Effect<unknown, Error>;
+  /**
+   * Injected CLI runner for fixture tests; production uses `herdr` exec.
+   * Must honor `timeoutMs` (fail with HerdrCliTimeoutError / cancel work).
+   */
+  readonly run?: (
+    args: readonly string[],
+    options?: HerdrCliRunOptions
+  ) => Effect.Effect<unknown, Error>;
 }
 
 const execFileAsync = promisify(execFile);
 
+const abortedError = (): DOMException =>
+  new DOMException("The operation was aborted", "AbortError");
+
+const timeoutError = (
+  args: readonly string[],
+  timeoutMs: number | undefined,
+  cause?: unknown
+): HerdrCliTimeoutError =>
+  new HerdrCliTimeoutError(
+    `herdr ${args.join(" ")} timed out after ${timeoutMs ?? "?"}ms`,
+    cause === undefined ? undefined : { cause }
+  );
+
 /**
- * Default Herdr CLI runner: exec `herdr <args...>` and parse JSON stdout.
- * Empty stdout becomes `null`. Non-JSON stdout fails closed.
+ * Build a cancellable CLI runner that aborts when Effect is interrupted or
+ * when `timeoutMs` elapses. Used for production and as a template for fixtures.
+ *
+ * Deadline aborts become `HerdrCliTimeoutError`. Effect interruption aborts the
+ * owned work via the signal and surfaces as interruption (not a typed timeout).
  */
-const defaultRun =
-  (herdrBin: string) =>
-  (args: readonly string[]): Effect.Effect<unknown, Error> =>
+export const makeAbortableRun =
+  (
+    execute: (args: readonly string[], signal: AbortSignal) => Promise<unknown>
+  ): ((
+    args: readonly string[],
+    options?: HerdrCliRunOptions
+  ) => Effect.Effect<unknown, Error>) =>
+  (args, options = {}) =>
     Effect.tryPromise({
-      catch: (error) => new Error(String(error)),
-      try: async () => {
-        const { stdout } = await execFileAsync(herdrBin, [...args], {
-          encoding: "utf-8",
-        });
-        const text = String(stdout).trim();
-        if (text.length === 0) {
-          return null;
+      catch: (error) => {
+        if (isHerdrCliTimeoutError(error)) {
+          return error instanceof Error
+            ? error
+            : new HerdrCliTimeoutError(String(error));
         }
+        return error instanceof Error ? error : new Error(String(error));
+      },
+      try: async (outerSignal) => {
+        if (outerSignal.aborted) {
+          throw abortedError();
+        }
+        if (options.timeoutMs !== undefined && options.timeoutMs <= 0) {
+          throw timeoutError(args, options.timeoutMs);
+        }
+
+        const controller = new AbortController();
+        let timedOut = false;
+        let timeoutHandle: NodeJS.Timeout | undefined;
+
+        const abortFromOuter = () => {
+          controller.abort();
+        };
+        outerSignal.addEventListener("abort", abortFromOuter, { once: true });
+
         try {
-          return JSON.parse(text) as unknown;
-        } catch {
-          throw new Error(
-            `herdr ${args.join(" ")} returned non-JSON stdout: ${text.slice(0, 200)}`
-          );
+          if (options.timeoutMs !== undefined) {
+            timeoutHandle = setTimeout(() => {
+              timedOut = true;
+              controller.abort();
+            }, options.timeoutMs);
+          }
+
+          try {
+            const value = await execute(args, controller.signal);
+            if (timedOut) {
+              throw timeoutError(args, options.timeoutMs);
+            }
+            if (outerSignal.aborted) {
+              throw abortedError();
+            }
+            return value;
+          } catch (error) {
+            if (timedOut) {
+              throw timeoutError(args, options.timeoutMs, error);
+            }
+            if (
+              outerSignal.aborted ||
+              (error instanceof Error && error.name === "AbortError")
+            ) {
+              throw error instanceof Error ? error : abortedError();
+            }
+            throw error instanceof Error ? error : new Error(String(error));
+          }
+        } finally {
+          outerSignal.removeEventListener("abort", abortFromOuter);
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+          }
         }
       },
     });
+
+/**
+ * Default Herdr CLI runner: exec `herdr <args...>` and parse JSON stdout.
+ * Empty stdout becomes `null`. Non-JSON stdout fails closed.
+ * Applies remaining deadline via AbortSignal + kill on timeout/interrupt.
+ */
+const defaultRun = (herdrBin: string) =>
+  makeAbortableRun(async (args, signal) => {
+    const { stdout } = await execFileAsync(herdrBin, [...args], {
+      encoding: "utf-8",
+      killSignal: "SIGKILL",
+      signal,
+    });
+    const text = String(stdout).trim();
+    if (text.length === 0) {
+      return null;
+    }
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new Error(
+        `herdr ${args.join(" ")} returned non-JSON stdout: ${text.slice(0, 200)}`
+      );
+    }
+  });
 
 const identityFromWorkspace = (workspace: HerdrWorkspace): RunIdentity => ({
   project_id: workspace.projectId,
@@ -106,19 +211,34 @@ const assertWorkspaceMatches = (
   }
 };
 
-const toWorkspace = (
-  input: EnsureRunWorkspaceInput,
-  path: string,
-  workspaceId: string
-): HerdrWorkspace => ({
-  path,
-  projectId: input.projectId,
-  repo: input.repo,
-  runId: input.runId,
-  ticketId: input.ticketId,
-  workspaceId,
-  ...(input.kind === undefined ? {} : { kind: input.kind }),
-});
+const remainingMs = (deadline: number): number =>
+  Math.max(0, deadline - Date.now());
+
+const handleFromAgent = (
+  agent: ParsedAgentInfo,
+  expectedName: string,
+  expectedWorkspaceId: string,
+  reattached: boolean
+): HerdrAgentHandle => {
+  if (!agent.terminalId) {
+    throw new Error(
+      `herdr agent ${expectedName} missing terminal_id after decode`
+    );
+  }
+  if (agent.workspaceId !== expectedWorkspaceId) {
+    throw new Error(
+      `agent ${expectedName} belongs to workspace ${agent.workspaceId}, expected ${expectedWorkspaceId}`
+    );
+  }
+  // Prefer Herdr-assigned name when present; fall back to requested name.
+  const agentName = agent.agentName ?? expectedName;
+  return {
+    agentName,
+    reattached,
+    target: agent.terminalId,
+    workspaceId: agent.workspaceId,
+  };
+};
 
 /**
  * Live Herdr CLI adapter (fail-closed).
@@ -126,8 +246,10 @@ const toWorkspace = (
  *
  * Contracts:
  * - never fabricates workspace paths or `ws-${runId}` IDs
- * - find-or-start reattaches existing agents; start conflicts re-query and attach
- * - wait maps idle/done/blocked/unknown/timeout and fails on malformed envelopes
+ * - create path must equal expectedRunPath and re-list must confirm binding
+ * - find-or-start proves agent via schema-decoded name/workspace/terminal_id
+ * - waits/reads use terminal_id as the stable target
+ * - wait timeout bounds each CLI invocation and cancels owned subprocess work
  */
 export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
   const herdrBin = options.herdrBin ?? "herdr";
@@ -163,6 +285,52 @@ export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
 
   const findWorkspaceByRunId = (runId: string) =>
     Effect.sync(() => Option.fromNullishOr(cache.get(runId)));
+
+  /**
+   * Accept a create/query workspace only when path equals expectedRunPath and
+   * a re-list confirms the path/workspace binding (fail closed otherwise).
+   */
+  const verifyAndCacheWorkspace = (
+    input: EnsureRunWorkspaceInput,
+    candidate: { path: string; workspaceId: string }
+  ): Effect.Effect<HerdrWorkspace, Error> =>
+    Effect.gen(function* verifyWorkspace() {
+      const expectedPath = expectedRunPath(input.repoCheckout, input.runId);
+      if (candidate.path !== expectedPath) {
+        return yield* Effect.fail(
+          new Error(
+            `herdr workspace path ${candidate.path} does not match expected ${expectedPath}`
+          )
+        );
+      }
+      if (!candidate.workspaceId) {
+        return yield* Effect.fail(
+          new Error("herdr workspace missing workspace_id")
+        );
+      }
+
+      const confirmed = yield* queryWorkspace(input);
+      if (!confirmed) {
+        return yield* Effect.fail(
+          new Error(
+            `herdr did not list path/workspace binding for run ${input.runId} after create`
+          )
+        );
+      }
+      if (
+        confirmed.path !== expectedPath ||
+        confirmed.workspaceId !== candidate.workspaceId
+      ) {
+        return yield* Effect.fail(
+          new Error(
+            `herdr listed binding path=${confirmed.path} workspace=${confirmed.workspaceId}; expected path=${expectedPath} workspace=${candidate.workspaceId}`
+          )
+        );
+      }
+      assertWorkspaceMatches(confirmed, input);
+      cache.set(input.runId, confirmed);
+      return confirmed;
+    });
 
   const ensureRunWorkspace = (input: EnsureRunWorkspaceInput) =>
     Effect.gen(function* ensureWorkspace() {
@@ -210,29 +378,28 @@ export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
         );
       }
 
-      const parsed = parseWorktreeCreate(createdOrError.success);
-      if (parsed.workspaceId && parsed.path) {
-        const workspace = toWorkspace(input, parsed.path, parsed.workspaceId);
-        cache.set(input.runId, workspace);
-        return workspace;
+      let parsed: { path: string; workspaceId: string };
+      try {
+        parsed = parseWorktreeCreate(createdOrError.success);
+      } catch (error) {
+        // Malformed create envelope: re-query once in case Herdr did create.
+        const afterBadCreate = yield* queryWorkspace(input);
+        if (afterBadCreate) {
+          assertWorkspaceMatches(afterBadCreate, input);
+          cache.set(input.runId, afterBadCreate);
+          return afterBadCreate;
+        }
+        return yield* Effect.fail(
+          error instanceof Error ? error : new Error(String(error))
+        );
       }
 
-      const afterCreate = yield* queryWorkspace(input);
-      if (afterCreate) {
-        assertWorkspaceMatches(afterCreate, input);
-        cache.set(input.runId, afterCreate);
-        return afterCreate;
-      }
-      return yield* Effect.fail(
-        new Error(
-          `herdr worktree create for run ${input.runId} returned no workspace id/path`
-        )
-      );
+      return yield* verifyAndCacheWorkspace(input, parsed);
     });
 
   /**
-   * Look up an agent by name.
-   * Returns `undefined` for agent_not_found (exit 0 envelope or process error).
+   * Look up an agent by name and prove workspace + terminal_id.
+   * Returns `undefined` for agent_not_found (exit 0/1 envelope or process error).
    */
   const findExistingAgent = (
     agentName: string,
@@ -254,7 +421,6 @@ export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
         );
       }
 
-      // CLI may return error envelope with exit 0 — check envelope.
       const envelope = getResult.success;
       const code = herdrErrorCode(envelope);
       if (code === "agent_not_found") {
@@ -266,20 +432,22 @@ export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
         );
       }
 
-      const got = parseAgentGet(envelope);
-      if (got.workspaceId && got.workspaceId !== workspaceId) {
+      let got: ParsedAgentInfo;
+      try {
+        got = parseAgentGet(envelope);
+      } catch (error) {
         return yield* Effect.fail(
-          new Error(
-            `agent ${agentName} belongs to workspace ${got.workspaceId}, expected ${workspaceId}`
-          )
+          error instanceof Error ? error : new Error(String(error))
         );
       }
-      return {
-        agentName,
-        reattached: true,
-        target: agentName,
-        workspaceId,
-      };
+
+      try {
+        return handleFromAgent(got, agentName, workspaceId, true);
+      } catch (error) {
+        return yield* Effect.fail(
+          error instanceof Error ? error : new Error(String(error))
+        );
+      }
     });
 
   const startPiPhase = (input: StartPiPhaseInput) =>
@@ -316,17 +484,29 @@ export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
         ...input.argv,
       ]).pipe(Effect.result);
 
-      const startedHandle = {
-        agentName: input.agentName,
-        reattached: false as const,
-        target: input.agentName,
-        workspaceId: input.workspaceId,
-      };
-
       if (Result.isSuccess(startResult)) {
         const startCode = herdrErrorCode(startResult.success);
         if (!startCode) {
-          return startedHandle;
+          let started: ParsedAgentInfo;
+          try {
+            started = parseAgentStarted(startResult.success);
+          } catch (error) {
+            return yield* Effect.fail(
+              error instanceof Error ? error : new Error(String(error))
+            );
+          }
+          try {
+            return handleFromAgent(
+              started,
+              input.agentName,
+              input.workspaceId,
+              false
+            );
+          } catch (error) {
+            return yield* Effect.fail(
+              error instanceof Error ? error : new Error(String(error))
+            );
+          }
         }
         const envelopeText = JSON.stringify(startResult.success);
         if (
@@ -368,8 +548,28 @@ export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
   const waitAgentTerminal = (target: string, opts: WaitAgentTerminalOptions) =>
     Effect.gen(function* waitAgent() {
       const deadline = Date.now() + opts.timeoutMs;
-      while (Date.now() <= deadline) {
-        const got = yield* run(["agent", "get", target]);
+      while (true) {
+        const budget = remainingMs(deadline);
+        if (budget <= 0) {
+          return "timed_out" as const;
+        }
+
+        const gotOrError = yield* run(["agent", "get", target], {
+          timeoutMs: budget,
+        }).pipe(Effect.result);
+
+        if (Result.isFailure(gotOrError)) {
+          if (isHerdrCliTimeoutError(gotOrError.failure)) {
+            return "timed_out" as const;
+          }
+          return yield* Effect.fail(
+            gotOrError.failure instanceof Error
+              ? gotOrError.failure
+              : new Error(String(gotOrError.failure))
+          );
+        }
+
+        const got = gotOrError.success;
         const code = herdrErrorCode(got);
         if (code) {
           return yield* Effect.fail(
@@ -378,16 +578,26 @@ export const makeHerdrCli = (options: HerdrCliOptions = {}): HerdrPortShape => {
             )
           );
         }
-        const parsed = parseAgentGet(got);
+
+        let parsed: ParsedAgentInfo;
+        try {
+          parsed = parseAgentGet(got);
+        } catch (error) {
+          return yield* Effect.fail(
+            error instanceof Error ? error : new Error(String(error))
+          );
+        }
+
         if (isTerminalAgentStatus(parsed.status)) {
           return parsed.status;
         }
-        if (Date.now() >= deadline) {
-          break;
+
+        const sleepBudget = Math.min(pollIntervalMs, remainingMs(deadline));
+        if (sleepBudget <= 0) {
+          return "timed_out" as const;
         }
-        yield* Effect.promise(() => delay(pollIntervalMs));
+        yield* Effect.promise(() => delay(sleepBudget));
       }
-      return "timed_out" as const;
     });
 
   const readAgentSummary = (target: string) =>
