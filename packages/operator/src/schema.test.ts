@@ -107,7 +107,6 @@ describe(StartPhaseRequest, () => {
       "owner/..",
       "owner/.",
       "-owner/repo",
-      "owner/-repo",
       "owner/repo/",
       "/owner/repo",
       "owner//repo",
@@ -116,27 +115,33 @@ describe(StartPhaseRequest, () => {
       "owner/repo name",
       " owner/repo",
       "owner/repo ",
-      "owner/.hidden",
       ".owner/repo",
-      "owner/_repo",
-      "owner/repo-",
       "owner-/repo",
+      "owner/repo with space",
       `o${"a".repeat(39)}/repo`,
-      `owner/r${"a".repeat(100)}`,
+      `owner/${"a".repeat(101)}`,
     ]) {
       expect(() => decodeStartPhaseRequestSync(validStart({ repo }))).toThrow(
-        /repo|SchemaError|pattern|Pattern|length|max/iu
+        /repo|SchemaError|pattern|Pattern|length|max|owner|name|exactly/iu
       );
     }
   });
 
-  it("accepts valid GitHub-style repo refs", () => {
+  it("accepts valid GitHub-style repo refs including edge punctuation", () => {
     for (const repo of [
       "v36372/agentic-loop",
       "a/b",
       "org-name/repo.name",
       "OrgName/repo_name",
       "o1/r2",
+      "github/.github",
+      "actions/.github",
+      "owner/.hidden",
+      "owner/_repo",
+      "owner/-repo",
+      "owner/repo-",
+      "owner/repo.",
+      "owner/_.",
     ]) {
       expect(decodeStartPhaseRequestSync(validStart({ repo })).repo).toBe(repo);
     }
@@ -175,28 +180,52 @@ describe(RepoOwner, () => {
 });
 
 describe(RepoName, () => {
-  it("rejects path-like and separator-leading names", () => {
+  it("accepts GitHub-valid names including edge punctuation", () => {
+    for (const name of [
+      ".github",
+      "_repo",
+      "-repo",
+      "repo-",
+      "repo.",
+      "a",
+      "repo.name",
+    ]) {
+      expect(Schema.decodeUnknownSync(RepoName)(name)).toBe(name);
+    }
+  });
+
+  it("rejects bare dots, separators, whitespace, and overlength", () => {
     for (const name of [
       "..",
       ".",
-      "-repo",
-      ".repo",
-      "_repo",
-      "repo-",
-      "repo.",
+      "repo/name",
+      "repo name",
+      "",
+      "a".repeat(101),
     ]) {
       expect(() => Schema.decodeUnknownSync(RepoName)(name)).toThrow(
-        /matching|RegExp|pattern|Pattern|SchemaError/iu
+        /matching|RegExp|pattern|Pattern|SchemaError|length|max|NonEmpty|empty/iu
       );
     }
   });
 });
 
 describe(RepoRef, () => {
-  it("accepts owner/name only", () => {
+  it("accepts owner/name including .github", () => {
     expect(Schema.decodeUnknownSync(RepoRef)("v36372/agentic-loop")).toBe(
       "v36372/agentic-loop"
     );
+    expect(Schema.decodeUnknownSync(RepoRef)("github/.github")).toBe(
+      "github/.github"
+    );
+  });
+
+  it("rejects bare name segments and extra path segments", () => {
+    for (const repo of ["owner/.", "owner/..", "a/b/c", "only-owner"]) {
+      expect(() => Schema.decodeUnknownSync(RepoRef)(repo)).toThrow(
+        /repo|owner|name|exactly|SchemaError|pattern|Pattern/iu
+      );
+    }
   });
 });
 

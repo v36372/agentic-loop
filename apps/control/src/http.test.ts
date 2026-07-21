@@ -152,7 +152,7 @@ describe(listenControlHttp, () => {
       phaseLayer: memory.layer,
     });
     try {
-      const repos = ["../repo", "owner/..", "-owner/repo", "owner/-repo"];
+      const repos = ["../repo", "owner/..", "-owner/repo", "owner/."];
       const statuses = await Promise.all(
         repos.map(async (repo) => {
           const response = await postStart(server.url, {

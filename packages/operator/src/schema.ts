@@ -37,32 +37,48 @@ export type RunId = typeof RunId.Type;
  * Starts and ends with alphanumeric; hyphens allowed inside; max 39 chars.
  * Rejects `.`, `..`, leading/trailing hyphens, and path-like tokens.
  */
+const REPO_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
+
+/**
+ * GitHub repository-name segment: letters, digits, `.`, `-`, `_`; max 100.
+ * Allows punctuation at edges (e.g. `.github`) but rejects bare `.` / `..`.
+ */
+const REPO_NAME_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/u;
+
 export const RepoOwner = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u),
+  Schema.isPattern(REPO_OWNER_PATTERN),
   Schema.isMaxLength(39)
 );
 export type RepoOwner = typeof RepoOwner.Type;
 
-/**
- * GitHub-style repository name segment.
- * Starts and ends with alphanumeric; `.`, `_`, `-` allowed inside; max 100 chars.
- * Rejects `.`, `..`, leading/trailing separators, and path-like tokens.
- */
 export const RepoName = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/u),
+  Schema.isPattern(REPO_NAME_PATTERN),
   Schema.isMaxLength(100)
 );
 export type RepoName = typeof RepoName.Type;
 
 /**
- * GitHub-style `owner/name` repository identity composed from bounded segments.
- * Rejects traversal-like values, extra/missing segments, whitespace, and overlong refs.
+ * GitHub-style `owner/name` repository identity derived from the same
+ * owner/name segment contracts (not a stricter duplicated regex).
  */
 export const RepoRef = Schema.String.check(
-  Schema.isPattern(
-    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/u
-  ),
-  Schema.isMaxLength(140)
+  Schema.isMaxLength(140),
+  Schema.makeFilter((ref: string) => {
+    const parts = ref.split("/");
+    if (parts.length !== 2) {
+      return "repo must be exactly owner/name";
+    }
+    const [owner, name] = parts;
+    if (owner === undefined || name === undefined) {
+      return "repo must be exactly owner/name";
+    }
+    if (owner.length > 39 || !REPO_OWNER_PATTERN.test(owner)) {
+      return "invalid repository owner segment";
+    }
+    if (name.length > 100 || !REPO_NAME_PATTERN.test(name)) {
+      return "invalid repository name segment";
+    }
+  })
 );
 export type RepoRef = typeof RepoRef.Type;
 
