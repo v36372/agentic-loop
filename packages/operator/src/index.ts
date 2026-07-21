@@ -91,3 +91,35 @@ export {
   RecordingPhaseCompletionSenderLayer,
 } from "./adapters/completion-recording.js";
 export type { RecordingPhaseCompletionState } from "./adapters/completion-recording.js";
+
+export {
+  HerdrCliLayer,
+  makeAbortableRun,
+  makeHerdrCli,
+} from "./adapters/herdr-cli.js";
+export type {
+  HerdrCliOptions,
+  HerdrCliRunOptions,
+} from "./adapters/herdr-cli.js";
+
+export {
+  HerdrCliTimeoutError,
+  herdrErrorCode,
+  isAgentStartConflictMessage,
+  isHerdrCliTimeoutError,
+  isTerminalAgentStatus,
+  parseAgentGet,
+  parseAgentList,
+  parseAgentReadText,
+  parseAgentStarted,
+  parseWorkspaceGet,
+  parseWorkspaceList,
+  parseWorktreeCreate,
+  parseWorktreeList,
+  resolveWorkspaceFromHerdrState,
+} from "./adapters/herdr-decode.js";
+export type {
+  ParsedAgentInfo,
+  ParsedWorktreeCreate,
+  ResolveWorkspaceInput,
+} from "./adapters/herdr-decode.js";

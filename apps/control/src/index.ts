@@ -25,15 +25,20 @@ export type {
   PhaseBabysitFailure,
 } from "./http.js";
 export {
+  makeLivePhaseLayer,
   makeMemoryPhaseLayer,
   parseControlPhaseMode,
   resolvePhaseLayer,
 } from "./layers.js";
-export type { ControlPhaseMode, MemoryPhaseLayerBundle } from "./layers.js";
+export type {
+  ControlPhaseMode,
+  LivePhaseLayerBundle,
+  MemoryPhaseLayerBundle,
+} from "./layers.js";
 
 /**
  * Start control HTTP when executed as the app entrypoint.
- * Requires explicit CONTROL_PHASE_MODE=memory (no silent default).
+ * Requires explicit CONTROL_PHASE_MODE=memory|live (no silent default).
  */
 export const main = async (
   env: NodeJS.ProcessEnv = process.env

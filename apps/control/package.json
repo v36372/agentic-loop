@@ -9,6 +9,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "start:memory": "CONTROL_PHASE_MODE=memory tsx src/index.ts",
+    "start:live": "CONTROL_PHASE_MODE=live tsx src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc -b"
   },
