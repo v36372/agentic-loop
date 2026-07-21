@@ -2,12 +2,20 @@ import { Effect, Option } from "effect";
 
 import { PhaseCompletionSender } from "./completion-port.js";
 import { HerdrPort } from "./herdr-port.js";
+import type { EnsureRunWorkspaceInput } from "./herdr-port.js";
 import {
   agentNameFor,
   buildPhaseCompleted,
   mapAgentStatus,
   resolveAttempt,
 } from "./idempotency.js";
+import {
+  formatRunIdentity,
+  RunIdentityConflictError,
+  runIdentitiesEqual,
+  runIdentityFromCompletion,
+  runIdentityFromRequest,
+} from "./identity.js";
 import { buildPiArgv } from "./prompts.js";
 import type {
   PhaseCompletedEvent,
@@ -26,24 +34,45 @@ export interface RunPhaseOptions {
 const repoCheckoutOf = (req: StartPhaseRequest): string =>
   req.context.repo_checkout ?? process.cwd();
 
+const ensureInputFromRequest = (
+  req: StartPhaseRequest
+): EnsureRunWorkspaceInput => ({
+  projectId: req.project_id,
+  repo: req.repo,
+  repoCheckout: repoCheckoutOf(req),
+  runId: req.run_id,
+  ticketId: req.ticket_id,
+  ...(req.kind === undefined ? {} : { kind: req.kind }),
+});
+
 const findPriorCompletion = (
   sender: PhaseCompletionSender["Service"],
-  runId: string,
-  phase: StartPhaseRequest["phase"],
+  req: StartPhaseRequest,
   attempt: number
 ): Effect.Effect<Option.Option<PhaseCompletedEvent>, Error> =>
   Effect.gen(function* findPrior() {
+    const requested = runIdentityFromRequest(req);
     for (const status of [
       "blocked",
       "cancelled",
       "failed",
       "succeeded",
     ] as const) {
-      const key = `${runId}:${phase}:${attempt}:${status}`;
+      const key = `${req.run_id}:${req.phase}:${attempt}:${status}`;
       const prior = yield* sender.findByIdempotencyKey(key);
-      if (Option.isSome(prior)) {
-        return prior;
+      if (Option.isNone(prior)) {
+        continue;
       }
+      const priorIdentity = runIdentityFromCompletion(prior.value);
+      if (!runIdentitiesEqual(priorIdentity, requested)) {
+        return yield* Effect.fail(
+          new RunIdentityConflictError(
+            req.run_id,
+            `prior completion ${formatRunIdentity(priorIdentity)}; requested ${formatRunIdentity(requested)}`
+          )
+        );
+      }
+      return prior;
     }
     return Option.none();
   });
@@ -62,21 +91,14 @@ export const runPhase = (
     const attempt = resolveAttempt(req);
     const timeoutMs = options.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;
 
-    const prior = yield* findPriorCompletion(
-      sender,
-      req.run_id,
-      req.phase,
-      attempt
-    );
+    const prior = yield* findPriorCompletion(sender, req, attempt);
     if (Option.isSome(prior)) {
       return prior.value;
     }
 
-    const workspace = yield* herdr.ensureRunWorkspace({
-      repo: req.repo,
-      repoCheckout: repoCheckoutOf(req),
-      runId: req.run_id,
-    });
+    const workspace = yield* herdr.ensureRunWorkspace(
+      ensureInputFromRequest(req)
+    );
 
     const agentName = agentNameFor(req.run_id, req.phase, attempt);
     const handle = yield* herdr.startPiPhase({
@@ -112,6 +134,7 @@ export const runPhase = (
 /**
  * Accept path: ensure workspace exists, return 202 payload.
  * Caller may fork `runPhase` for babysitting (control HTTP does this).
+ * Rejects conflicting immutable identity reuse before accepting.
  */
 export const startPhase = (
   req: StartPhaseRequest
@@ -119,11 +142,9 @@ export const startPhase = (
   Effect.gen(function* startPhaseGen() {
     const herdr = yield* HerdrPort;
     const attempt = resolveAttempt(req);
-    const workspace = yield* herdr.ensureRunWorkspace({
-      repo: req.repo,
-      repoCheckout: repoCheckoutOf(req),
-      runId: req.run_id,
-    });
+    const workspace = yield* herdr.ensureRunWorkspace(
+      ensureInputFromRequest(req)
+    );
 
     return {
       accepted: true as const,

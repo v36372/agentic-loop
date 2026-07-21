@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 
 import {
   decodeStartPhaseRequestSync,
+  isRunIdentityConflictError,
   runPhase,
   startPhase,
 } from "@agentic-loop/operator";
@@ -17,6 +18,9 @@ import type { Layer } from "effect";
 
 /** Maximum background failure entries retained for diagnostics. */
 export const MAX_PHASE_FAILURES = 32;
+
+/** Maximum accepted JSON body size for control write routes. */
+export const MAX_START_PHASE_BODY_BYTES = 64 * 1024;
 
 export interface PhaseBabysitFailure {
   readonly at: string;
@@ -48,6 +52,26 @@ export interface ControlHealthz {
   readonly phase_failure_count: number;
 }
 
+class PayloadTooLargeError extends Error {
+  readonly _tag = "PayloadTooLargeError" as const;
+  readonly maxBytes: number;
+
+  constructor(maxBytes: number) {
+    super(`request body exceeds ${maxBytes} bytes`);
+    this.name = "PayloadTooLargeError";
+    this.maxBytes = maxBytes;
+  }
+}
+
+const isPayloadTooLargeError = (
+  error: unknown
+): error is PayloadTooLargeError =>
+  error instanceof PayloadTooLargeError ||
+  (typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    error._tag === "PayloadTooLargeError");
+
 /** Snapshot health/diagnostics from the bounded failure ledger. */
 export const healthzFromFailures = (
   failures: readonly PhaseBabysitFailure[]
@@ -58,11 +82,35 @@ export const healthzFromFailures = (
   phase_failure_count: failures.length,
 });
 
-const readJsonBody = async (req: IncomingMessage): Promise<unknown> => {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+const drainRequest = (req: IncomingMessage): void => {
+  req.resume();
+};
+
+const readJsonBody = async (
+  req: IncomingMessage,
+  maxBytes: number
+): Promise<unknown> => {
+  const contentLengthHeader = req.headers["content-length"];
+  if (contentLengthHeader !== undefined) {
+    const declared = Number(contentLengthHeader);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      drainRequest(req);
+      throw new PayloadTooLargeError(maxBytes);
+    }
   }
+
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buf.byteLength;
+    if (total > maxBytes) {
+      drainRequest(req);
+      throw new PayloadTooLargeError(maxBytes);
+    }
+    chunks.push(buf);
+  }
+
   const raw = Buffer.concat(chunks).toString("utf-8");
   if (raw.trim().length === 0) {
     return {};
@@ -128,8 +176,16 @@ const handleStartPhase = async (
 ): Promise<void> => {
   let body: unknown;
   try {
-    body = await readJsonBody(req);
-  } catch {
+    body = await readJsonBody(req, MAX_START_PHASE_BODY_BYTES);
+  } catch (error) {
+    if (isPayloadTooLargeError(error)) {
+      sendJson(res, 413, {
+        detail: String(error),
+        error: "payload_too_large",
+        max_bytes: MAX_START_PHASE_BODY_BYTES,
+      });
+      return;
+    }
     sendJson(res, 400, { error: "invalid_json" });
     return;
   }
@@ -155,6 +211,13 @@ const handleStartPhase = async (
       forkRunPhase(decoded, options, failures);
     }
   } catch (error) {
+    if (isRunIdentityConflictError(error)) {
+      sendJson(res, 409, {
+        detail: String(error),
+        error: "run_identity_conflict",
+      });
+      return;
+    }
     sendJson(res, 500, {
       detail: String(error),
       error: "start_phase_failed",

@@ -9,6 +9,16 @@ export {
 } from "./idempotency.js";
 export type { BuildPhaseCompletedInput } from "./idempotency.js";
 
+export {
+  formatRunIdentity,
+  isRunIdentityConflictError,
+  RunIdentityConflictError,
+  runIdentitiesEqual,
+  runIdentityFromCompletion,
+  runIdentityFromRequest,
+} from "./identity.js";
+export type { RunIdentity } from "./identity.js";
+
 export { DEFAULT_AGENT_TIMEOUT_MS, runPhase, startPhase } from "./phase.js";
 export type { PhaseDeps, RunPhaseOptions } from "./phase.js";
 
@@ -40,6 +50,8 @@ export {
   PhaseCompletedEventName,
   PhaseContext,
   PhaseTerminalStatus,
+  RepoName,
+  RepoOwner,
   RepoRef,
   RunId,
   StartPhaseAccepted,
@@ -53,6 +65,8 @@ export type {
   PhaseCompletedEvent as PhaseCompletedEventType,
   PhaseContext as PhaseContextType,
   PhaseTerminalStatus as PhaseTerminalStatusType,
+  RepoName as RepoNameType,
+  RepoOwner as RepoOwnerType,
   RepoRef as RepoRefType,
   RunId as RunIdType,
   StartPhaseAccepted as StartPhaseAcceptedType,

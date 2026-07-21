@@ -32,9 +32,37 @@ export const RunId = Schema.String.check(
 );
 export type RunId = typeof RunId.Type;
 
-/** GitHub-style owner/name repo identity. */
+/**
+ * GitHub-style owner/org segment.
+ * Starts and ends with alphanumeric; hyphens allowed inside; max 39 chars.
+ * Rejects `.`, `..`, leading/trailing hyphens, and path-like tokens.
+ */
+export const RepoOwner = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u),
+  Schema.isMaxLength(39)
+);
+export type RepoOwner = typeof RepoOwner.Type;
+
+/**
+ * GitHub-style repository name segment.
+ * Starts and ends with alphanumeric; `.`, `_`, `-` allowed inside; max 100 chars.
+ * Rejects `.`, `..`, leading/trailing separators, and path-like tokens.
+ */
+export const RepoName = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/u),
+  Schema.isMaxLength(100)
+);
+export type RepoName = typeof RepoName.Type;
+
+/**
+ * GitHub-style `owner/name` repository identity composed from bounded segments.
+ * Rejects traversal-like values, extra/missing segments, whitespace, and overlong refs.
+ */
 export const RepoRef = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)
+  Schema.isPattern(
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/u
+  ),
+  Schema.isMaxLength(140)
 );
 export type RepoRef = typeof RepoRef.Type;
 

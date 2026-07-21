@@ -1,6 +1,8 @@
 import { Context } from "effect";
 import type { Effect, Option } from "effect";
 
+import type { TicketKind } from "./schema.js";
+
 /** Terminal / poll statuses returned by HerdrPort.waitAgentTerminal. */
 export type AgentTerminalStatus =
   | "blocked"
@@ -10,10 +12,17 @@ export type AgentTerminalStatus =
   | "unknown"
   | "working";
 
+/**
+ * Run workspace bound to immutable ticket/project/repo identity.
+ * Reuse under the same `runId` must preserve these fields and the path.
+ */
 export interface HerdrWorkspace {
+  readonly kind?: TicketKind;
   readonly path: string;
+  readonly projectId: string;
   readonly repo: string;
   readonly runId: string;
+  readonly ticketId: string;
   readonly workspaceId: string;
 }
 
@@ -26,9 +35,12 @@ export interface HerdrAgentHandle {
 
 export interface EnsureRunWorkspaceInput {
   readonly branchHint?: string;
+  readonly kind?: TicketKind;
+  readonly projectId: string;
   readonly repo: string;
   readonly repoCheckout: string;
   readonly runId: string;
+  readonly ticketId: string;
 }
 
 export interface StartPiPhaseInput {

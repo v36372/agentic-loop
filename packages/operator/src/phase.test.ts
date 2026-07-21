@@ -15,6 +15,7 @@ import {
   idempotencyKey,
   mapAgentStatus,
 } from "./idempotency.js";
+import { isRunIdentityConflictError } from "./identity.js";
 import { runPhase, startPhase } from "./phase.js";
 import { decodePhaseCompletedEventSync } from "./schema.js";
 import type { StartPhaseRequest } from "./schema.js";
@@ -37,6 +38,15 @@ const baseRequest = (
   run_id: "run-42",
   ticket_id: "8",
   ...overrides,
+});
+
+const ensureInput = (req: StartPhaseRequest) => ({
+  projectId: req.project_id,
+  repo: req.repo,
+  repoCheckout: req.context.repo_checkout ?? "/tmp/agentic-loop",
+  runId: req.run_id,
+  ticketId: req.ticket_id,
+  ...(req.kind === undefined ? {} : { kind: req.kind }),
 });
 
 describe(idempotencyKey, () => {
@@ -120,36 +130,66 @@ describe(runPhase, () => {
     expect(eventRefs(senderState.events[0])).toStrictEqual({ base: "main" });
   });
 
-  it("reattaches the same workspace for a repeated ensure", async () => {
+  it("reattaches the same workspace for a repeated ensure with same identity", async () => {
     const herdrState = createInMemoryHerdrState();
     const herdr = makeInMemoryHerdr(herdrState);
-    const first = await Effect.runPromise(
-      herdr.ensureRunWorkspace({
-        repo: "v36372/agentic-loop",
-        repoCheckout: "/tmp/agentic-loop",
-        runId: "run-7",
-      })
-    );
-    const second = await Effect.runPromise(
-      herdr.ensureRunWorkspace({
-        repo: "v36372/agentic-loop",
-        repoCheckout: "/tmp/agentic-loop",
-        runId: "run-7",
-      })
-    );
+    const input = ensureInput(baseRequest({ run_id: "run-7" }));
+    const first = await Effect.runPromise(herdr.ensureRunWorkspace(input));
+    const second = await Effect.runPromise(herdr.ensureRunWorkspace(input));
     expect(second.workspaceId).toBe(first.workspaceId);
     expect(herdrState.createCountByRunId.get("run-7")).toBe(1);
+  });
+
+  it("rejects ensure when the same run_id reuses conflicting identity", async () => {
+    const herdrState = createInMemoryHerdrState();
+    const herdr = makeInMemoryHerdr(herdrState);
+    await Effect.runPromise(
+      herdr.ensureRunWorkspace(ensureInput(baseRequest({ run_id: "run-9" })))
+    );
+
+    await expect(
+      Effect.runPromise(
+        herdr.ensureRunWorkspace(
+          ensureInput(
+            baseRequest({
+              run_id: "run-9",
+              ticket_id: "99",
+            })
+          )
+        )
+      )
+    ).rejects.toSatisfy(isRunIdentityConflictError);
+  });
+
+  it("rejects ensure when checkout path conflicts for the same run", async () => {
+    const herdrState = createInMemoryHerdrState();
+    const herdr = makeInMemoryHerdr(herdrState);
+    await Effect.runPromise(
+      herdr.ensureRunWorkspace(ensureInput(baseRequest({ run_id: "run-path" })))
+    );
+
+    await expect(
+      Effect.runPromise(
+        herdr.ensureRunWorkspace(
+          ensureInput(
+            baseRequest({
+              context: {
+                refs: { base: "main" },
+                repo_checkout: "/tmp/other-checkout",
+              },
+              run_id: "run-path",
+            })
+          )
+        )
+      )
+    ).rejects.toSatisfy(isRunIdentityConflictError);
   });
 
   it("reattaches an in-flight agent instead of starting a second pi", async () => {
     const herdrState = createInMemoryHerdrState({ terminalStatus: "working" });
     const herdr = makeInMemoryHerdr(herdrState);
     const workspace = await Effect.runPromise(
-      herdr.ensureRunWorkspace({
-        repo: "v36372/agentic-loop",
-        repoCheckout: "/tmp/agentic-loop",
-        runId: "run-42",
-      })
+      herdr.ensureRunWorkspace(ensureInput(baseRequest()))
     );
     const first = await Effect.runPromise(
       herdr.startPiPhase({
@@ -174,7 +214,7 @@ describe(runPhase, () => {
     expect(second.target).toBe(first.target);
   });
 
-  it("treats duplicate completion emits as harmless", async () => {
+  it("treats duplicate completion emits as harmless for same identity", async () => {
     const herdrState = createInMemoryHerdrState({ terminalStatus: "idle" });
     const senderState = createRecordingSenderState();
     const layer = Layer.merge(
@@ -193,6 +233,32 @@ describe(runPhase, () => {
     expect(second).toStrictEqual(first);
     expect(senderState.events).toHaveLength(1);
     expect(senderState.sendCalls).toBe(1);
+  });
+
+  it("rejects prior-completion short-circuit when identity conflicts", async () => {
+    const herdrState = createInMemoryHerdrState({ terminalStatus: "idle" });
+    const senderState = createRecordingSenderState();
+    const layer = Layer.merge(
+      InMemoryHerdrLayer(herdrState),
+      RecordingPhaseCompletionSenderLayer(senderState)
+    );
+
+    await Effect.runPromise(
+      runPhase(baseRequest()).pipe(Effect.provide(layer))
+    );
+
+    await expect(
+      Effect.runPromise(
+        runPhase(
+          baseRequest({
+            ticket_id: "99",
+          })
+        ).pipe(Effect.provide(layer))
+      )
+    ).rejects.toSatisfy(isRunIdentityConflictError);
+
+    expect(senderState.events).toHaveLength(1);
+    expect(senderState.events[0]?.ticket_id).toBe("8");
   });
 
   it("maps blocked agent status to blocked completion", async () => {
@@ -250,5 +316,45 @@ describe(startPhase, () => {
       workspace_id: "ws-run-42",
     });
     expect(herdrState.agents.size).toBe(0);
+  });
+
+  it("rejects conflicting identity reuse before accepting", async () => {
+    const herdrState = createInMemoryHerdrState();
+    const layer = InMemoryHerdrLayer(herdrState);
+
+    await Effect.runPromise(
+      startPhase(baseRequest({ run_id: "run-conflict" })).pipe(
+        Effect.provide(layer)
+      )
+    );
+
+    await expect(
+      Effect.runPromise(
+        startPhase(
+          baseRequest({
+            project_id: "2",
+            run_id: "run-conflict",
+          })
+        ).pipe(Effect.provide(layer))
+      )
+    ).rejects.toSatisfy(isRunIdentityConflictError);
+
+    expect(herdrState.createCountByRunId.get("run-conflict")).toBe(1);
+  });
+
+  it("accepts same-identity retries harmlessly", async () => {
+    const herdrState = createInMemoryHerdrState();
+    const layer = InMemoryHerdrLayer(herdrState);
+    const req = baseRequest({ run_id: "run-retry" });
+
+    const first = await Effect.runPromise(
+      startPhase(req).pipe(Effect.provide(layer))
+    );
+    const second = await Effect.runPromise(
+      startPhase(req).pipe(Effect.provide(layer))
+    );
+
+    expect(second).toStrictEqual(first);
+    expect(herdrState.createCountByRunId.get("run-retry")).toBe(1);
   });
 });
