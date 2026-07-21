@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  makeLivePhaseLayer,
   makeMemoryPhaseLayer,
   parseControlPhaseMode,
   resolvePhaseLayer,
 } from "./layers.js";
 
 describe(parseControlPhaseMode, () => {
-  it("requires explicit memory mode", () => {
+  it("accepts explicit memory and live modes", () => {
     expect(parseControlPhaseMode("memory")).toBe("memory");
+    expect(parseControlPhaseMode("live")).toBe("live");
   });
 
   it("rejects missing mode instead of silent memory default", () => {
@@ -18,9 +20,6 @@ describe(parseControlPhaseMode, () => {
   });
 
   it("rejects unknown modes fail-closed", () => {
-    expect(() => parseControlPhaseMode("live")).toThrow(
-      /invalid CONTROL_PHASE_MODE/u
-    );
     expect(() => parseControlPhaseMode("prod")).toThrow(
       /invalid CONTROL_PHASE_MODE/u
     );
@@ -39,10 +38,29 @@ describe(makeMemoryPhaseLayer, () => {
   });
 });
 
+describe(makeLivePhaseLayer, () => {
+  it("builds a live Herdr CLI layer with recording sender", () => {
+    const bundle = makeLivePhaseLayer({});
+    expect(bundle.senderState.events).toHaveLength(0);
+    expect(bundle.layer).toBeDefined();
+  });
+
+  it("honors HERDR_BIN without requiring a completion URL yet", () => {
+    const bundle = makeLivePhaseLayer({ HERDR_BIN: "herdr-custom" });
+    expect(bundle.layer).toBeDefined();
+  });
+});
+
 describe(resolvePhaseLayer, () => {
   it("builds a memory layer only when mode is explicit", () => {
     const resolved = resolvePhaseLayer({ CONTROL_PHASE_MODE: "memory" });
     expect(resolved.mode).toBe("memory");
+    expect(resolved.senderState.events).toHaveLength(0);
+  });
+
+  it("builds a live layer when mode is live", () => {
+    const resolved = resolvePhaseLayer({ CONTROL_PHASE_MODE: "live" });
+    expect(resolved.mode).toBe("live");
     expect(resolved.senderState.events).toHaveLength(0);
   });
 
